@@ -23,6 +23,7 @@ for iterating to an optimal policy and reward value for a given MDP.
 import numpy as np
 import warnings
 from utils.decorators import print_runtime
+import time
 
 
 class Planner:
@@ -58,10 +59,12 @@ class Planner:
             Policy mapping states to actions.
         """
         V = np.zeros(len(self.P), dtype=np.float64)
-        V_track = np.zeros((n_iters, len(self.P)), dtype=np.float64)
+        Q_track = np.zeros((n_iters, len(self.P), len(self.P[0])), dtype=np.float64)
         i = 0
         converged = False
         while i < n_iters-1 and not converged:
+            if i % 50 == 0:
+                print(f'Value iteration {i}')
             i += 1
             Q = np.zeros((len(self.P), len(self.P[0])), dtype=np.float64)
             for s in range(len(self.P)):
@@ -70,8 +73,9 @@ class Planner:
                         Q[s][a] += prob * (reward + gamma * V[next_state] * (not done))
             if np.max(np.abs(V - np.max(Q, axis=1))) < theta:
                 converged = True
+            print(f'max diff: {np.max(np.abs(V - np.max(Q, axis=1)))}')
             V = np.max(Q, axis=1)
-            V_track[i] = V
+            Q_track[i] = Q
         if not converged:
             warnings.warn("Max iterations reached before convergence.  Check theta and n_iters.  ")
         # Explanation of lambda:
@@ -81,7 +85,7 @@ class Planner:
         #       policy[state] = action
         #   return policy[s]
         pi = lambda s: {s:a for s, a in enumerate(np.argmax(Q, axis=1))}[s]
-        return V, V_track, pi
+        return V, Q_track, pi, Q, i
 
     @print_runtime
     def policy_iteration(self, gamma=1.0, n_iters=50, theta=1e-10):
@@ -111,6 +115,7 @@ class Planner:
         pi {lambda}, input state value, output action value:
             Policy mapping states to actions.
         """
+        import copy
         random_actions = np.random.choice(tuple(self.P[0].keys()), len(self.P))
         # Explanation of lambda:
         # def pi(s):
@@ -118,34 +123,50 @@ class Planner:
         #   for state, action in enumerate(np.argmax(Q, axis=1)):
         #       policy[state] = action
         #   return policy[s]
-        pi = lambda s: {s: a for s, a in enumerate(random_actions)}[s]
+        pi = {s: a for s, a in enumerate(random_actions)}
         # initial V to give to `policy_evaluation` for the first time
         V = np.zeros(len(self.P), dtype=np.float64)
-        V_track = np.zeros((n_iters, len(self.P)), dtype=np.float64)
+        Q_track = np.zeros((n_iters, len(self.P), len(self.P[0])), dtype=np.float64)
         i = 0
+        pol_eval_time = 0
+        pol_improv_time = 0
+        pol_eval_iters = []
         converged = False
         while i < n_iters-1 and not converged:
+            print(f'Policy iteration {i}')
             i += 1
-            old_pi = {s: pi(s) for s in range(len(self.P))}
-            V = self.policy_evaluation(pi, V, gamma, theta)
-            V_track[i] = V
-            pi = self.policy_improvement(V, gamma)
-            if old_pi == {s: pi(s) for s in range(len(self.P))}:
+            old_pi = copy.deepcopy(pi)
+            start = time.time()
+            V, conv_iters = self.policy_evaluation(pi, V, gamma, theta)
+            pol_eval_iters.append(conv_iters)
+            pol_eval_time += (time.time() - start)
+            start = time.time()
+            pi, Q = self.policy_improvement(V, gamma)
+            pol_improv_time += (time.time() - start)
+            Q_track[i] = Q
+            if old_pi == pi:
                 converged = True
         if not converged:
             warnings.warn("Max iterations reached before convergence.  Check n_iters.")
-        return V, V_track, pi
+        print(f'Policy evaluation time: {pol_eval_time}')
+        print(f'Policy improvement time: {pol_improv_time}')
+        print(f'Policy evaluation iterations avg: {np.mean(pol_eval_iters)}')
+        pi_func = lambda s: pi[s]
+        return V, Q_track, pi_func, Q, i + 1
 
     def policy_evaluation(self, pi, prev_V, gamma=1.0, theta=1e-10):
+        i = 0
         while True:
+            i += 1
             V = np.zeros(len(self.P), dtype=np.float64)
             for s in range(len(self.P)):
-                for prob, next_state, reward, done in self.P[s][pi(s)]:
+                for prob, next_state, reward, done in self.P[s][pi[s]]:
                     V[s] += prob * (reward + gamma * prev_V[next_state] * (not done))
             if np.max(np.abs(prev_V - V)) < theta:
                 break
             prev_V = V.copy()
-        return V
+        print(f'Policy evaluation converged in {i} iterations')
+        return V, i
 
     def policy_improvement(self, V, gamma=1.0):
         Q = np.zeros((len(self.P), len(self.P[0])), dtype=np.float64)
@@ -159,5 +180,5 @@ class Planner:
         #   for state, action in enumerate(np.argmax(Q, axis=1)):
         #       policy[state] = action
         #   return policy[s]
-        new_pi = lambda s: {s: a for s, a in enumerate(np.argmax(Q, axis=1))}[s]
-        return new_pi
+        new_pi = {s: a for s, a in enumerate(np.argmax(Q, axis=1))}
+        return new_pi, Q
